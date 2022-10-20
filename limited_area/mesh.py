@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 from netCDF4 import Dataset
+import xarray as xr
 
 """ mesh.py - Handle NetCDF file operations as well as helpful
 calculations upon on MPAS grid. """
@@ -13,8 +14,8 @@ class MeshHandler:
 
     def __init__(self, fname, mode, format='NETCDF3_64BIT_OFFSET', *args, **kwargs):
         """ Open fname with mode, for either reading, or creating
-        
-        fname - A valid netCDF4 file OR, if `mode==w` then a name of a 
+
+        fname - A valid netCDF4 file OR, if `mode==w` then a name of a
                 desired netCDF that will be created for writing.
         mode  - Mode for opening the file, options are 'r' and 'w' for read
                 and write respectively.
@@ -52,13 +53,17 @@ class MeshHandler:
         """ Check to see that fname exists and it is a valid NetCDF file """
         if os.path.isfile(fname):
             try:
+                """
                 mesh = open(fname, 'rb')
                 nc_bytes = mesh.read()
                 mesh.close()
-                
+
                 self.mesh = Dataset(fname, 'r', memory=nc_bytes)
+                """
+                self.mesh = xr.open_dataset(fname)
+
                 return True
-            except OSError as E: 
+            except OSError as E:
                 print("ERROR: ", E)
                 print("ERROR: This file was not a valid NetCDF file")
                 sys.exit(-1)
@@ -67,8 +72,8 @@ class MeshHandler:
             return False
 
     def _load_vars(self):
-        """ Pre-load variables to avoid multiple, unnecessary IO calls 
-            
+        """ Pre-load variables to avoid multiple, unnecessary IO calls
+
             Pulling variables from a netCDF4 interface like the following:
             ```self.mesh.variables['lonCell']{[:]```, will read it from disk
             each time, thus we can pre-load the variables into memory to reduce
@@ -77,6 +82,30 @@ class MeshHandler:
         if self._DEBUG_ > 2:
             print("DEBUG: In Load Vars")
 
+
+        # Dimensions
+        self.nCells = self.mesh['nCells'].size
+        self.nEdges = self.mesh['nEdges'].size
+        self.maxEdges = self.mesh['maxEdges'].size
+        self.nVertices = self.mesh['nVertices'].size
+        self.vertexDegree = self.mesh['vertexDegree'].size
+
+        # Variables
+        self.latCells = self.mesh['latCell'][:].values
+        self.lonCells = self.mesh['lonCell'][:].values
+
+        self.nEdgesOnCell = self.mesh['nEdgesOnCell'][:].values
+        self.cellsOnCell = self.mesh['cellsOnCell'][:].values
+        self.cellsOnEdge = self.mesh['cellsOnEdge'][:].values
+        self.cellsOnVertex = self.mesh['cellsOnVertex'][:].values
+
+        self.indexToCellIDs = self.mesh['indexToCellID'][:].values
+        self.indexToEdgeIDs = self.mesh['indexToEdgeID'][:].values
+        self.indexToVertexIDs = self.mesh['indexToVertexID'][:].values
+
+        self.sphere_radius = self.mesh.sphere_radius
+
+        """
         # Dimensions
         self.nCells = self.mesh.dimensions['nCells'].size
         self.nEdges = self.mesh.dimensions['nEdges'].size
@@ -99,6 +128,7 @@ class MeshHandler:
 
         # Attributes
         self.sphere_radius = self.mesh.sphere_radius
+        """
 
         self.variables = { 'latCells' : self.latCells,
                            'lonCells' : self.lonCells,
@@ -128,10 +158,10 @@ class MeshHandler:
                                                lat,
                                                lon,
                                                self.sphere_radius)
-            
+
             nearest_cell = current_cell
             nearest_distance = current_distance
-            
+
             for edges in range(self.nEdgesOnCell[current_cell]):
                 iCell = self.cellsOnCell[current_cell, edges] - 1
                 if (iCell <= self.nCells):
@@ -145,7 +175,7 @@ class MeshHandler:
                         nearest_cell = iCell
                         nearest_distance = iDistance
 
-    
+
         if self._DEBUG_ > 3:
             print("DEBUG: nearest_cell latLon: ", nearest_cell, '\t',
                                                   self.latCells[nearest_cell] * (180.0/np.pi),
@@ -161,6 +191,7 @@ class MeshHandler:
         # In the limited_area program, this function will always create
         # a graph.info file for a regional mesh. Thus, the variables here
         # are not preloaded and are being read from disk
+        print(self.mesh.dimensions)
         nCells = self.mesh.dimensions['nCells'].size
         nEdges = self.mesh.dimensions['nEdges'].size
 
@@ -187,25 +218,25 @@ class MeshHandler:
 
         return graphFname
 
-    def subset_fields(self, 
-                      regionalFname, 
+    def subset_fields(self,
+                      regionalFname,
                       bdyMaskCell,
                       bdyMaskEdge,
                       bdyMaskVertex,
                       inside,
                       unmarked,
                       format='NETCDF3_64BIT_OFFSET',
-                      *args, 
+                      *args,
                       **kwargs):
         """ Subset the current mesh and return a new regional mesh with
-        subsetted fields 
-        
+        subsetted fields
+
         regionalFname -- Desired filename for the regional subset
         bdyMaskCell   -- Global mesh mask denoting regional cells
         bdyMaskEdge   -- Global mesh mask denoting regional edges
         bdyMaskVertex -- Global mesh mask denoting regional vertices
-        inside        -- The integer value that was used to mark the 
-                         cells, edges, vertices as being 'inside' the 
+        inside        -- The integer value that was used to mark the
+                         cells, edges, vertices as being 'inside' the
                          regional within the bdyMasks
         unmarked      -- The integer value that was used to mark cells,
                          edges, vertices as being 'outside' of the regional
@@ -238,7 +269,7 @@ class MeshHandler:
             print("DEBUG: nEdges of new region: ", len(glbBdyEdgeIDs))
             print("DEBUG: nVertex of new region: ", len(glbBdyVertexIDs))
 
-        # Check to see the user didn't mess specifying the region. If 
+        # Check to see the user didn't mess specifying the region. If
         # len(bdyIndexToCellIDs) == nCells, then the specification was probably not
         # specified correctly
         force = False
@@ -255,31 +286,27 @@ class MeshHandler:
         region = MeshHandler(regionalFname, 'w', format=format, *args, **kwargs)
 
         # Dimensions - Create dimensions
-        for dim in self.mesh.dimensions:
+        for dim in self.mesh.dims:
             if dim == 'nCells':
-                region.mesh.createDimension(dim, 
+                region.mesh.createDimension(dim,
                                             len(glbBdyCellIDs))
             elif dim == 'nEdges':
-                region.mesh.createDimension(dim, 
+                region.mesh.createDimension(dim,
                                             len(glbBdyEdgeIDs))
             elif dim == 'nVertices':
-                region.mesh.createDimension(dim, 
+                region.mesh.createDimension(dim,
                                             len(glbBdyVertexIDs))
             else:
-                if self.mesh.dimensions[dim].isunlimited():
-                    region.mesh.createDimension(dim,
-                                                None)
-                else:
-                    region.mesh.createDimension(dim,
-                                                self.mesh.dimensions[dim].size)
+                region.mesh.createDimension(dim,
+                                            self.mesh.dims[dim])
 
         # Make boundary Mask's between 0 and the number of specified relaxation
         # layers
         region.mesh.createVariable('bdyMaskCell', 'i4', ('nCells',))
         region.mesh.createVariable('bdyMaskEdge', 'i4', ('nEdges',))
-        region.mesh.createVariable('bdyMaskVertex', 'i4', ('nVertices')) 
+        region.mesh.createVariable('bdyMaskVertex', 'i4', ('nVertices'))
 
-        region.mesh.variables['bdyMaskCell'][:] = bdyMaskCell[bdyMaskCell != 0] - 1 
+        region.mesh.variables['bdyMaskCell'][:] = bdyMaskCell[bdyMaskCell != 0] - 1
         region.mesh.variables['bdyMaskEdge'][:] = bdyMaskEdge[bdyMaskEdge != 0] - 1
         region.mesh.variables['bdyMaskVertex'][:] = bdyMaskVertex[bdyMaskVertex != 0] - 1
 
@@ -294,7 +321,7 @@ class MeshHandler:
             # been created by this program
             if var != 'bdyMaskCell' and var != 'bdyMaskEdge' and var != 'bdyMaskVertex':
                 region.mesh.createVariable(var, self.mesh.variables[var].dtype,
-                                                self.mesh.variables[var].dimensions)
+                                                self.mesh.variables[var].dims)
                 try:
                     region.mesh.variables[var].units = self.mesh.variables[var].units
                     region.mesh.variables[var].long_name = self.mesh.variables[var].long_name
@@ -315,39 +342,42 @@ class MeshHandler:
             else:
                 arrTemp = self.mesh.variables[var][:] # Else, read it from disk
 
-            if 'nCells' in self.mesh.variables[var].dimensions:
+            if 'nCells' in self.mesh.variables[var].dims:
                 if var in indexingFields:
-                    region.mesh.variables[var][:] = reindex_field(arrTemp[glbBdyCellIDs], 
+                    region.mesh.variables[var][:] = reindex_field(arrTemp[glbBdyCellIDs],
                                                                   indexingFields[var])
                     print('Done!')
                 else:
                     print('')
-                    if 'Time' in region.mesh.variables[var].dimensions:
-                        region.mesh.variables[var][:] = arrTemp[:, glbBdyCellIDs]
-                    else:
-                        region.mesh.variables[var][:] = arrTemp[glbBdyCellIDs]
-            elif 'nEdges' in self.mesh.variables[var].dimensions:
+                    region.mesh.variables[var][:] = arrTemp[glbBdyCellIDs]
+                    #if 'Time' in region.mesh.variables[var].dims:
+                    #    region.mesh.variables[var][:] = arrTemp[:, glbBdyCellIDs]
+                    #else:
+                    #    region.mesh.variables[var][:] = arrTemp[glbBdyCellIDs]
+            elif 'nEdges' in self.mesh.variables[var].dims:
                 if var in indexingFields:
-                    region.mesh.variables[var][:] = reindex_field(arrTemp[glbBdyEdgeIDs], 
+                    region.mesh.variables[var][:] = reindex_field(arrTemp[glbBdyEdgeIDs],
                                                                   indexingFields[var])
                     print('Done!')
                 else:
                     print('')
-                    if 'Time' in region.mesh.variables[var].dimensions:
-                        region.mesh.variables[var][:] = arrTemp[:, glbBdyEdgeIDs]
-                    else:
-                        region.mesh.variables[var][:] = arrTemp[glbBdyEdgeIDs]
-            elif 'nVertices' in self.mesh.variables[var].dimensions:
+                    #if 'Time' in region.mesh.variables[var].dims:
+                    #    region.mesh.variables[var][:] = arrTemp[:, glbBdyEdgeIDs]
+                    #else:
+                    #    region.mesh.variables[var][:] = arrTemp[glbBdyEdgeIDs]
+                    region.mesh.variables[var][:] = arrTemp[glbBdyEdgeIDs]
+            elif 'nVertices' in self.mesh.variables[var].dims:
                 if var in indexingFields:
-                    region.mesh.variables[var][:] = reindex_field(arrTemp[glbBdyVertexIDs], 
+                    region.mesh.variables[var][:] = reindex_field(arrTemp[glbBdyVertexIDs],
                                                                   indexingFields[var])
                     print('Done!')
                 else:
                     print('')
-                    if 'Time' in region.mesh.variables[var].dimensions:
-                        region.mesh.variables[var][:] = arrTemp[:, glbBdyVertexIDs]
-                    else:
-                        region.mesh.variables[var][:] = arrTemp[glbBdyVertexIDs]
+                    #if 'Time' in region.mesh.variables[var].dims:
+                    #    region.mesh.variables[var][:] = arrTemp[:, glbBdyVertexIDs]
+                    #else:
+                    #    region.mesh.variables[var][:] = arrTemp[glbBdyVertexIDs]
+                    region.mesh.variables[var][:] = arrTemp[glbBdyVertexIDs]
             else:
                 print('')
                 region.mesh.variables[var][:] = arrTemp
@@ -426,7 +456,7 @@ def xyz_to_latlon(point):
 
 
 def sphere_distance(lat1, lon1, lat2, lon2, radius, **kwargs):
-    """ Calculate the sphere distance between point1 and point2. 
+    """ Calculate the sphere distance between point1 and point2.
 
     lat1 - Float - Radians - -pi:pi
     lon1 - Float - Radians - 0:2*pi
@@ -434,12 +464,12 @@ def sphere_distance(lat1, lon1, lat2, lon2, radius, **kwargs):
     lon2 - Float - Radians - 0:2*pi
     radius - Radius of the earth (or sphere) - Units can be ignored
 
-    """ 
+    """
     return (2 * radius * np.arcsin(
                          np.sqrt(
                          np.sin(0.5 * (lat2 - lat1))**2
-                       + np.cos(lat1) 
-                       * np.cos(lat2) 
+                       + np.cos(lat1)
+                       * np.cos(lat2)
                        * np.sin(0.5 * (lon2 - lon1))**2)))
 
 
